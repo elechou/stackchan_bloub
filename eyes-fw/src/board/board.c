@@ -38,28 +38,29 @@ static int axp_init(void)
         i2c_write_reg(AXP2101, 0x62, (uint8_t)((v & 0xE0) | 13));
     }
 
-    board_backlight(0);
+    board_backlight_mv(0);
     return 0;
 }
 
-void board_backlight(int percent)
+int board_backlight_mv(int mv)
 {
     int v = i2c_read_reg(AXP2101, 0x90);
     if (v < 0) {
-        return;
+        return 0;
     }
-    if (percent <= 0) {
+    if (mv <= 0) {
         i2c_write_reg(AXP2101, 0x90, (uint8_t)(v & 0x7F)); /* DLDO1 off */
-        return;
+        return 0;
     }
-    if (percent > 100) {
-        percent = 100;
-    }
-    /* DLDO1 is the backlight supply: 2.5 V (dim) to 3.3 V (full), 0.1 V steps */
-    i2c_write_reg(AXP2101, 0x99, (uint8_t)(20 + percent * 8 / 100));
+    if (mv < BOARD_BACKLIGHT_MV_MIN) mv = BOARD_BACKLIGHT_MV_MIN;
+    if (mv > BOARD_BACKLIGHT_MV_MAX) mv = BOARD_BACKLIGHT_MV_MAX;
+    /* DLDO1 is the backlight supply: register n is 0.5 V + n * 0.1 V */
+    int n = (mv - 500 + 50) / 100;
+    i2c_write_reg(AXP2101, 0x99, (uint8_t)n);
     if (!(v & 0x80)) {
         i2c_write_reg(AXP2101, 0x90, (uint8_t)(v | 0x80));
     }
+    return 500 + n * 100;
 }
 
 void board_print_power(void)
@@ -70,10 +71,11 @@ void board_print_power(void)
     int ldo = i2c_read_reg(AXP2101, 0x90);
     int bl = i2c_read_reg(AXP2101, 0x99);
     static const char *const dir[] = { "standby", "charging", "discharging", "?" };
-    con_printf("power: usb %s, battery %s %d%%, %s, ldo 0x%02x, backlight reg %d\n",
+    con_printf("power: usb %s, battery %s %d%%, %s, ldo 0x%02x, backlight %s %d mV\n",
                (st >= 0 && (st & 0x20)) ? "present" : "absent",
                (st >= 0 && (st & 0x08)) ? "present" : "absent", pct,
-               chg >= 0 ? dir[(chg >> 5) & 3] : "?", (unsigned)ldo, bl);
+               chg >= 0 ? dir[(chg >> 5) & 3] : "?", (unsigned)ldo,
+               (ldo >= 0 && (ldo & 0x80)) ? "on" : "off", bl >= 0 ? 500 + (bl & 0x1F) * 100 : -1);
 }
 
 /* --------------------------------------------------------------- expander */

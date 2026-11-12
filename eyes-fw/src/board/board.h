@@ -13,8 +13,15 @@
 
 #include <stdint.h>
 
-/* Default backlight, 1..100. The stock firmware maps the same range. */
-#define BOARD_BRIGHTNESS_DEFAULT 60
+/*
+ * Backlight, as the voltage of the AXP2101 rail that feeds it (DLDO1), in mV.
+ * The stock firmware maps its 1..100 onto 2500..3300 mV. The panel is an LCD:
+ * black pixels only block the backlight, so the dimmer it runs, the darker the
+ * black around the eyes. 2700 is about a third of the stock range.
+ */
+#define BOARD_BACKLIGHT_MV_DEFAULT 2700
+#define BOARD_BACKLIGHT_MV_MIN 500  /* the rail's lowest; the LEDs go dark well above it */
+#define BOARD_BACKLIGHT_MV_MAX 3300 /* the stock firmware's full brightness */
 
 /* Power rails and expander, exactly as the stock firmware sets them. The
  * backlight is left off. Returns 0 when both chips answered. */
@@ -26,8 +33,9 @@ void board_lcd_reset(void);
 /* 1 when the panel is the ILI9342E variant, 0 for the ILI9342C. */
 int board_panel_is_e(void);
 
-/* 0 switches the backlight off. */
-void board_backlight(int percent);
+/* Set the backlight rail, in 100 mV steps, clamped to MIN..MAX; 0 switches it
+ * off. Returns the voltage actually set. */
+int board_backlight_mv(int mv);
 
 /*
  * Keep the body quiet: servo power off, LEDs dark. The body's controller may

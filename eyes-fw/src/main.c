@@ -17,7 +17,7 @@ extern uint32_t _bss_start, _bss_end;
 static EyesAnim s_anim;
 static Renderer s_renderer;
 static EyeShape s_shapes[2]; /* what was last sent to the panel */
-static int s_brightness = BOARD_BRIGHTNESS_DEFAULT;
+static int s_backlight_mv = BOARD_BACKLIGHT_MV_DEFAULT;
 
 /* What the panel answers about itself. Proves the bus without a human looking. */
 static void print_panel_status(void)
@@ -131,9 +131,18 @@ static void timing(void)
                (unsigned)window_ns, (unsigned)pixel_ns, (unsigned)(pixel_ns ? window_ns / pixel_ns : 0));
 }
 
-static void console_poll(void)
+static void set_backlight(int mv)
 {
-    int c = con_getc();
+    s_backlight_mv = board_backlight_mv(mv);
+    if (s_backlight_mv) {
+        con_printf("backlight %d mV\n", s_backlight_mv);
+    } else {
+        con_puts("backlight off\n");
+    }
+}
+
+static void console_key(int c)
+{
     switch (c) {
     case 's':
         screenshot();
@@ -159,15 +168,46 @@ static void console_poll(void)
         timing();
         break;
     case '+':
-    case '-':
-        s_brightness += c == '+' ? 10 : -10;
-        if (s_brightness < 10) s_brightness = 10;
-        if (s_brightness > 100) s_brightness = 100;
-        board_backlight(s_brightness);
-        con_printf("brightness %d\n", s_brightness);
+    case '-': {
+        /* from off, '+' comes back at the stock firmware's dimmest */
+        int mv = (s_backlight_mv ? s_backlight_mv : 2400) + (c == '+' ? 100 : -100);
+        set_backlight(mv < BOARD_BACKLIGHT_MV_MIN ? BOARD_BACKLIGHT_MV_MIN : mv);
         break;
+    }
     default:
         break;
+    }
+}
+
+/*
+ * Single keys, plus one command with an argument: 'L' and a voltage in mV,
+ * ended by a newline ("L2700\n"; "L0\n" switches the backlight off). Up to a
+ * few bytes a frame, so a slider dragged in the web tool keeps up.
+ */
+static void console_poll(void)
+{
+    static int number = -1; /* >= 0 while an 'L' command is being typed */
+    for (int i = 0; i < 16; i++) {
+        int c = con_getc();
+        if (c < 0) {
+            return;
+        }
+        if (number >= 0) {
+            if (c >= '0' && c <= '9') {
+                if (number < 100000) number = number * 10 + (c - '0');
+                continue;
+            }
+            set_backlight(number);
+            number = -1;
+            if (c == '\r' || c == '\n') {
+                continue;
+            }
+        }
+        if (c == 'L') {
+            number = 0;
+        } else {
+            console_key(c);
+        }
     }
 }
 
@@ -197,11 +237,11 @@ void hal_main(void)
     eyes_step(&s_anim, 0.0f, shapes);
     renderer_full(&s_renderer, shapes, lcd_sink());
     lcd_display_on();
-    board_backlight(s_brightness);
+    board_backlight_mv(s_backlight_mv);
 
     print_panel_status();
     board_print_power();
-    con_printf("running%s. keys: i info, b boot log, n next expression, +/- brightness, s screenshot, v verify, t timing\n",
+    con_printf("running%s. keys: i info, b boot log, n next expression, +/- backlight 0.1 V, L<mV> backlight, s screenshot, v verify, t timing\n",
                board_ok ? "" : " (power chips did not answer!)");
 
     const uint32_t cpu_hz = hal_cpu_hz();

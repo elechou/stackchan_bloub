@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>StackChan 背光调节</title>
+<style>
+  :root { color-scheme: dark; font-family: system-ui, "Microsoft YaHei", sans-serif; }
+  body { margin: 0; background: #111; color: #ddd; display: flex; justify-content: center; }
+  main { width: min(640px, 100% - 32px); padding: 24px 0; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .hint { color: #888; font-size: 13px; line-height: 1.6; margin: 0 0 16px; }
+  .card { background: #1b1b1b; border: 1px solid #2c2c2c; border-radius: 10px; padding: 16px; margin-bottom: 14px; }
+  button { background: #2a2a2a; color: #eee; border: 1px solid #3a3a3a; border-radius: 6px; padding: 7px 12px; font-size: 14px; cursor: pointer; }
+  button:hover:not(:disabled) { background: #353535; }
+  button:disabled { opacity: .4; cursor: default; }
+  button.primary { background: #2f5d8a; border-color: #3d73a8; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .big { font-size: 44px; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .big small { font-size: 16px; color: #888; font-weight: 400; margin-left: 6px; }
+  input[type=range] { width: 100%; margin: 14px 0 4px; }
+  .scale { display: flex; justify-content: space-between; color: #777; font-size: 12px; }
+  .stock { position: relative; height: 6px; margin: 2px 0 10px; }
+  .stock div { position: absolute; top: 0; height: 6px; border-radius: 3px; background: #3d73a8; opacity: .5; }
+  .stock span { position: absolute; top: 8px; font-size: 11px; color: #6a8fb5; }
+  #status { font-size: 13px; color: #888; }
+  #status.ok { color: #6c6; }
+  pre { background: #0b0b0b; border: 1px solid #222; border-radius: 6px; padding: 10px; height: 220px; overflow: auto; font-size: 12px; margin: 0; white-space: pre-wrap; }
+  code { background: #0b0b0b; padding: 2px 6px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>StackChan 背光调节</h1>
+  <p class="hint">
+    用 Chrome 或 Edge 打开。先关掉 <code>fw.py monitor</code> 等占用串口的程序，再点「连接」并选择设备的串口（默认是 COM6）。
+    调到的亮度只在这次开机有效，重启后会回到固件里的默认值。
+  </p>
+
+  <div class="card row">
+    <button id="connect" class="primary">连接</button>
+    <button id="disconnect" disabled>断开</button>
+    <span id="status">未连接</span>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content: space-between">
+      <div class="big" id="readout">—<small>设备未回报</small></div>
+      <div class="row">
+        <button data-step="-100" class="ctl">−0.1 V</button>
+        <button data-step="100" class="ctl">+0.1 V</button>
+        <button id="off" class="ctl">关背光</button>
+      </div>
+    </div>
+    <input id="slider" type="range" min="500" max="3300" step="100" value="2700" class="ctl">
+    <div class="stock" id="stock"></div>
+    <div class="scale"><span>0.5 V</span><span>1.5 V</span><span>2.5 V</span><span>3.3 V</span></div>
+    <div class="row" style="margin-top: 14px">
+      <span style="color:#888;font-size:13px">常用：</span>
+      <button data-mv="2400" class="ctl">2.4</button>
+      <button data-mv="2500" class="ctl">2.5 原厂最暗</button>
+      <button data-mv="2600" class="ctl">2.6</button>
+      <button data-mv="2700" class="ctl">2.7 默认</button>
+      <button data-mv="2900" class="ctl">2.9 原来的</button>
+      <button data-mv="3300" class="ctl">3.3 最亮</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content: space-between">
+      <span style="font-size:13px;color:#888">满意了，把这行写进 <code>src/board/board.h</code> 再烧录：</span>
+      <button id="copy">复制</button>
+    </div>
+    <p style="margin:10px 0 0"><code id="define">#define BOARD_BACKLIGHT_MV_DEFAULT 2700</code></p>
+  </div>
+
+  <div class="card">
+    <div class="row" style="margin-bottom: 10px">
+      <button data-key="i" class="ctl">状态 i</button>
+      <button data-key="n" class="ctl">下一个表情 n</button>
+      <button id="clear">清空日志</button>
+    </div>
+    <pre id="log"></pre>
+  </div>
+</main>
+
+<script>
+const MIN = 500, MAX = 3300, STOCK_LO = 2500, STOCK_HI = 3300;
+const $ = (id) => document.getElementById(id);
+const slider = $("slider"), readout = $("readout"), logEl = $("log"), statusEl = $("status");
+
+// the stock firmware's range, drawn under the slider
+const pct = (mv) => ((mv - MIN) / (MAX - MIN)) * 100;
+$("stock").innerHTML =
+  `<div style="left:${pct(STOCK_LO)}%;width:${pct(STOCK_HI) - pct(STOCK_LO)}%"></div>` +
+  `<span style="left:${pct(STOCK_LO)}%">原厂范围</span>`;
+
+let port = null, writer = null, reader = null, keepReading = false;
+let deviceMv = null;
+
+function log(text) {
+  logEl.textContent += text;
+  if (logEl.textContent.length > 40000) logEl.textContent = logEl.textContent.slice(-30000);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setConnected(on) {
+  document.querySelectorAll(".ctl").forEach((b) => (b.disabled = !on));
+  $("connect").disabled = on;
+  $("disconnect").disabled = !on;
+  statusEl.textContent = on ? "已连接" : "未连接";
+  statusEl.className = on ? "ok" : "";
+}
+setConnected(false);
+
+function showDevice(mv) {
+  deviceMv = mv;
+  if (mv === 0) {
+    readout.innerHTML = `关<small>背光已关</small>`;
+  } else {
+    readout.innerHTML = `${(mv / 1000).toFixed(1)} V<small>${mv} mV</small>`;
+    slider.value = mv;
+    $("define").textContent = `#define BOARD_BACKLIGHT_MV_DEFAULT ${mv}`;
+  }
+}
+
+// Parse what the firmware says back: "backlight 2700 mV", "backlight off",
+// and the "backlight on 2700 mV" inside the 'i' report.
+let lineBuf = "";
+function onText(text) {
+  log(text);
+  lineBuf += text;
+  let nl;
+  while ((nl = lineBuf.indexOf("\n")) >= 0) {
+    const line = lineBuf.slice(0, nl);
+    lineBuf = lineBuf.slice(nl + 1);
+    let m;
+    if ((m = line.match(/backlight (?:on )?(\d+) mV/))) showDevice(+m[1]);
+    else if (/backlight off/.test(line)) showDevice(0);
+  }
+}
+
+async function send(text) {
+  if (!writer) return;
+  await writer.write(new TextEncoder().encode(text));
+}
+
+// Dragging the slider: at most one command every 60 ms, and always the last value.
+let pending = null, timer = null;
+function sendMv(mv) {
+  pending = mv;
+  if (timer) return;
+  const flush = async () => {
+    if (pending === null) { timer = null; return; }
+    const v = pending; pending = null;
+    await send(`L${v}\n`);
+    timer = setTimeout(flush, 60);
+  };
+  flush();
+}
+
+async function readLoop() {
+  const decoder = new TextDecoder();
+  while (port && port.readable && keepReading) {
+    reader = port.readable.getReader();
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        onText(decoder.decode(value, { stream: true }));
+      }
+    } catch (e) {
+      log(`\n[读取出错：${e.message}]\n`);
+    } finally {
+      reader.releaseLock();
+      reader = null;
+    }
+  }
+}
+
+$("connect").onclick = async () => {
+  if (!("serial" in navigator)) {
+    alert("这个浏览器不支持网页串口，请用 Chrome 或 Edge 打开。");
+    return;
+  }
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+    // On this chip RTS is the reset line and DTR the boot-mode line: let go of
+    // RTS first, then DTR, so opening the port does not reboot the robot.
+    await port.setSignals({ requestToSend: false });
+    await port.setSignals({ dataTerminalReady: false });
+    writer = port.writable.getWriter();
+    keepReading = true;
+    readLoop();
+    setConnected(true);
+    log("[已连接]\n");
+    await send("i"); // ask for the current state, which includes the backlight
+  } catch (e) {
+    log(`[连接失败：${e.message}]\n`);
+    port = null;
+  }
+};
+
+$("disconnect").onclick = async () => {
+  keepReading = false;
+  try {
+    if (reader) await reader.cancel();
+    if (writer) { writer.releaseLock(); writer = null; }
+    if (port) await port.close();
+  } catch (e) {
+    log(`[断开时出错：${e.message}]\n`);
+  }
+  port = null;
+  setConnected(false);
+  log("[已断开]\n");
+};
+
+navigator.serial?.addEventListener("disconnect", () => {
+  keepReading = false; writer = null; port = null;
+  setConnected(false);
+  log("[设备已拔出]\n");
+});
+
+slider.oninput = () => {
+  const mv = +slider.value;
+  readout.innerHTML = `${(mv / 1000).toFixed(1)} V<small>发送中…</small>`;
+  sendMv(mv);
+};
+document.querySelectorAll("[data-mv]").forEach((b) => (b.onclick = () => sendMv(+b.dataset.mv)));
+document.querySelectorAll("[data-step]").forEach((b) => (b.onclick = () => send(+b.dataset.step > 0 ? "+" : "-")));
+document.querySelectorAll("[data-key]").forEach((b) => (b.onclick = () => send(b.dataset.key)));
+$("off").onclick = () => send("L0\n");
+$("clear").onclick = () => (logEl.textContent = "");
+$("copy").onclick = async () => {
+  await navigator.clipboard.writeText($("define").textContent);
+  $("copy").textContent = "已复制";
+  setTimeout(() => ($("copy").textContent = "复制"), 1200);
+};
+</script>
+</body>
+</html>

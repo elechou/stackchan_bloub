@@ -11,11 +11,13 @@
 
 ## 现在设备上是什么
 
-`build/eyes.bin`，22 688 字节，
-SHA-256 `ba7c2cb0c8ef75cd227f5e932fede5876ce944bd61a32b645b31de86a89cc2ae`，
-即 `docs/stress-test.md` 里的「第 4 版」（上一版是 git tag `eyes-v3`）。
+`build/eyes.bin`，22 992 字节，
+SHA-256 `b8686cb4d57486aaae4ab5a9e379ca46a2c8da63a4d8ffe09331ea6956abc2c9`。
+它是 `docs/stress-test.md` 里的「第 4 版」（上一版是 git tag `eyes-v3`）加上背光调节：
+默认背光降到 2.7 V，串口可以按电压直接设背光（见下面的 `L` 命令和「亮度」一节）。
+动画和渲染没有改，加上背光调节后没有重新压测。
 
-它烧在 Flash 偏移 0，也就是原来二级 bootloader 的位置，占 32 KB 槽位的 69%。
+它烧在 Flash 偏移 0，也就是原来二级 bootloader 的位置，占 32 KB 槽位的 70%。
 芯片的 ROM 把它整个读进内存后直接运行。**原厂的应用、设置、资源分区一个字节都没动**，
 所以还原只需要把原厂 bootloader 写回去。
 
@@ -44,7 +46,8 @@ python tools/fw.py sim              编译电脑端仿真器 build/sim.exe
 | `i` | 屏幕状态、电池和供电、当前情绪和还会停留几秒 |
 | `b` | 重放启动日志（电脑一般来不及看到第一遍） |
 | `n` | 立即换成表情表里的下一个，0.7 秒到位。用来逐个看表情，压测也靠它 |
-| `+` `-` | 背光亮度加减 10（10~100，不保存，重启恢复默认） |
+| `+` `-` | 背光电压加减 0.1 V（0.5~3.3 V，不保存，重启恢复默认） |
+| `L2700` 回车 | 背光直接设成 2700 mV；`L0` 回车关背光。`tools/backlight.html` 用的就是它 |
 | `s` | 把屏幕显存整屏读回并打印，约 6 秒 |
 | `v` | 把屏幕显存整屏读回，与刚画的一帧逐像素比对，约 6 秒 |
 | `t` | 测量屏幕开一个窗口、发一个像素各要多久 |
@@ -146,7 +149,16 @@ python tools/contact.py face <目录> faces.png    拼成一张总览，带设�
 
 ### 亮度
 
-`src/board/board.h`：`BOARD_BRIGHTNESS_DEFAULT`（现值 60）是开机背光亮度。
+屏幕是 IPS 液晶，眼睛周围的「黑」是液晶挡住整片背光，挡不干净，所以黑底会透一点灰。
+背光越暗，黑底越黑。背光没有 PWM，亮度靠电源芯片 AXP2101 给背光那一路（DLDO1）的电压，
+0.1 V 一档。原厂固件的 1~100 对应 2.5~3.3 V；本固件允许一直调到 0.5 V，电压低不伤 LED，
+只是低到一定程度背光就灭了。
+
+`src/board/board.h`：`BOARD_BACKLIGHT_MV_DEFAULT`（现值 2700，原来相当于 2900）是开机背光电压。
+
+现场调：用 Chrome 或 Edge 打开 `tools/backlight.html`，连上串口拖滑块，屏幕跟着变；
+满意了把页面给出的那行 `#define` 写回 `board.h` 再烧录。用之前先关掉 `fw.py monitor`，
+两者不能同时占串口。
 
 ## 和 bloub 的关系
 
@@ -177,7 +189,7 @@ src/main.c    主循环
 ld/eyes.ld    链接脚本，全部放在内存里
 sim/          电脑端仿真器，和固件跑同一份 src/core
 tools/        fw.py（编译烧录）、stress.py（压测）、contact.py（把仿真画面拼成总览图）、
-              bloub_ref.ts（取 bloub 参考值）
+              bloub_ref.ts（取 bloub 参考值）、backlight.html（网页串口调背光）
 docs/         压测记录
 ```
 
