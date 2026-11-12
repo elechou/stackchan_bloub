@@ -12,8 +12,13 @@
  * The 16 rest expressions of bloub (src/bot/expressions.ts), same order, same
  * numbers, plus the two face-only states of its catalogue (wink, wide) whose
  * eyes were measured off the reference video (src/bot/states.ts).
+ *
+ * The last row is the only one that is not bloub's: the pet asleep. Its eyes
+ * are the closed eye bloub measured for the wink, a dash wider than the open
+ * eye, on both sides, with the head a little down. Their own tilt only undoes
+ * what the sphere does to a dash set that low, so that the two lie parallel.
  */
-const Expr EYES_EXPR[] = {
+const Expr EYES_EXPR[EYES_EXPR_COUNT] = {
     /* neutre    */ EXPR(28.49f, 28.62f, -13.0f, 15.46f, PAIR(0.186f, 0.412f, 0.0f, 1.0f)),
     /* attentif  */ EXPR(4.0f, 5.0f, -4.0f, 16.0f, PAIR(0.21f, 0.44f, 0.0f, 1.0f)),
     /* surpris   */ EXPR(3.0f, -3.0f, 0.0f, 19.0f, PAIR(0.45f, 0.47f, 0.0f, 1.0f)),
@@ -32,14 +37,123 @@ const Expr EYES_EXPR[] = {
     /* somnolent */ EXPR(6.0f, -9.0f, -3.0f, 16.0f, PAIR(0.2f, 0.42f, 0.0f, 0.42f)),
     /* wink      */ EXPR(-5.37f, 4.55f, 6.7f, 16.25f, { EYE(0.236f, 0.464f, 0.0f, 1.0f), EYE(0.447f, 0.089f, 0.0f, 1.0f) }),
     /* wide      */ EXPR(6.92f, -21.96f, 11.6f, 18.43f, PAIR(0.356f, 0.875f, 0.0f, 1.0f)),
+    /* endormi   */ EXPR(3.0f, -12.0f, -3.0f, 18.0f, PAIR(0.447f, 0.089f, -4.0f, 1.0f)),
 };
 
-const char *const EYES_EXPR_NAME[] = {
-    "neutre", "attentif", "surpris", "excite", "heureux", "hilare", "colere", "triste", "effraye",
-    "mefiant", "confus", "curieux", "fier", "timide", "blase", "somnolent", "wink", "wide",
+const char *const EYES_EXPR_NAME[EYES_EXPR_COUNT] = {
+    "neutre", "attentif", "surpris", "excite", "heureux", "hilare", "colere", "triste", "effraye", "mefiant",
+    "confus", "curieux", "fier", "timide", "blase", "somnolent", "wink", "wide", "endormi",
 };
 
-const int EYES_EXPR_COUNT = (int)(sizeof(EYES_EXPR) / sizeof(EYES_EXPR[0]));
+/* ------------------------------------------------------------------ moods */
+
+/*
+ * How the pet carries each expression. This table and the stories below are
+ * the whole of its character: change a number here and it becomes livelier,
+ * lazier, more or less of a daydreamer.
+ */
+enum {
+    LIDS_NORMAL, /* blinks every 2 to 5 s, a double one now and then */
+    LIDS_STARE,  /* half as often: something has its attention */
+    LIDS_HEAVY,  /* slow, and they stay shut a moment: it is falling asleep */
+    LIDS_STILL,  /* no blink at all */
+};
+
+typedef struct {
+    float settle_s;               /* how long the face takes to get there */
+    float stay_min_s, stay_max_s; /* how long it stays, once there */
+    float glance_s;               /* mean time between two looks elsewhere; 0 = it does not look around */
+    float wander;                 /* share of the idle gaze drift it keeps: 1 dreamy, 0 fixed */
+    uint8_t lids;
+    uint8_t gesture; /* left as fast as it was made, whatever comes next */
+    float breath;    /* how far breathing lifts the eyes, in sphere radii */
+} Mood;
+
+static const Mood MOOD[EYES_EXPR_COUNT] = {
+    /*                   settle   stay       glance wander lids */
+    [EYES_NEUTRE]    = { 3.5f, 18.0f, 50.0f, 9.0f, 1.00f, LIDS_NORMAL, 0, 0.0f },
+    [EYES_ATTENTIF]  = { 2.6f, 12.0f, 32.0f, 12.0f, 0.50f, LIDS_STARE, 0, 0.0f },
+    [EYES_SURPRIS]   = { 0.9f, 2.0f, 4.0f, 0.0f, 0.35f, LIDS_STARE, 0, 0.0f },
+    [EYES_EXCITE]    = { 1.4f, 3.0f, 6.0f, 0.0f, 1.00f, LIDS_NORMAL, 0, 0.0f },
+    [EYES_HEUREUX]   = { 2.4f, 5.0f, 11.0f, 0.0f, 0.80f, LIDS_NORMAL, 0, 0.0f },
+    [EYES_HILARE]    = { 1.5f, 2.5f, 5.0f, 0.0f, 0.80f, LIDS_NORMAL, 0, 0.0f },
+    [EYES_COLERE]    = { 2.2f, 3.0f, 6.0f, 0.0f, 0.40f, LIDS_STARE, 0, 0.0f },
+    [EYES_TRISTE]    = { 4.5f, 6.0f, 12.0f, 0.0f, 0.60f, LIDS_NORMAL, 0, 0.0f },
+    [EYES_EFFRAYE]   = { 0.8f, 2.0f, 4.0f, 0.0f, 0.50f, LIDS_STARE, 0, 0.0f },
+    [EYES_MEFIANT]   = { 2.2f, 4.0f, 8.0f, 2.8f, 0.50f, LIDS_STARE, 0, 0.0f },
+    [EYES_CONFUS]    = { 2.4f, 4.0f, 8.0f, 3.2f, 0.90f, LIDS_NORMAL, 0, 0.0f },
+    [EYES_CURIEUX]   = { 2.0f, 5.0f, 10.0f, 3.5f, 1.00f, LIDS_NORMAL, 0, 0.0f },
+    [EYES_FIER]      = { 2.6f, 4.0f, 8.0f, 0.0f, 0.60f, LIDS_NORMAL, 0, 0.0f },
+    [EYES_TIMIDE]    = { 2.6f, 4.0f, 8.0f, 0.0f, 0.70f, LIDS_NORMAL, 0, 0.0f },
+    [EYES_BLASE]     = { 4.0f, 6.0f, 12.0f, 7.0f, 0.70f, LIDS_NORMAL, 0, 0.0f },
+    [EYES_SOMNOLENT] = { 6.0f, 8.0f, 18.0f, 0.0f, 0.45f, LIDS_HEAVY, 0, 0.005f },
+    [EYES_WINK]      = { 0.4f, 0.7f, 1.1f, 0.0f, 0.50f, LIDS_STILL, 1, 0.0f },
+    [EYES_WIDE]      = { 0.8f, 1.6f, 2.6f, 0.0f, 0.35f, LIDS_STILL, 0, 0.0f },
+    [EYES_ENDORMI]   = { 5.0f, 20.0f, 50.0f, 0.0f, 0.10f, LIDS_STILL, 0, 0.014f },
+};
+
+/* The two moods it rests in. Everything else is something that happens to it. */
+int eyes_is_rest(int expr_id) { return expr_id == EYES_NEUTRE || expr_id == EYES_ATTENTIF; }
+
+/*
+ * What happens to it: little stories, each a few moods in a row, drawn by
+ * weight when the previous one is over. A mood is never jumped into from
+ * nowhere: anger comes through suspicion and fear through surprise, sleep
+ * through calm and drowsiness, and every story ends at rest.
+ *
+ * The first two lines are simply "at rest", so their weight is what decides
+ * how much of its time the pet spends doing nothing in particular.
+ */
+#define REST 0xFE /* whichever of the two resting moods, at random */
+#define END 0xFF
+
+static const uint8_t STORY[] = {
+    /* weight, moods ..., END */
+    22, EYES_NEUTRE, END,
+    22, EYES_ATTENTIF, END,
+    10, EYES_CURIEUX, EYES_ATTENTIF, END,
+    8, EYES_HEUREUX, REST, END,
+    6, EYES_NEUTRE, EYES_SOMNOLENT, EYES_NEUTRE, END,
+    5, EYES_NEUTRE, EYES_SOMNOLENT, EYES_ENDORMI, EYES_SOMNOLENT, EYES_NEUTRE, END,
+    5, EYES_NEUTRE, EYES_BLASE, EYES_NEUTRE, END,
+    4, EYES_ATTENTIF, EYES_MEFIANT, EYES_ATTENTIF, END,
+    3, EYES_HEUREUX, EYES_HILARE, EYES_HEUREUX, REST, END,
+    3, EYES_FIER, EYES_HEUREUX, REST, END,
+    3, EYES_CONFUS, EYES_CURIEUX, EYES_ATTENTIF, END,
+    3, EYES_TIMIDE, EYES_NEUTRE, END,
+    3, EYES_SURPRIS, EYES_ATTENTIF, END,
+    2, EYES_SURPRIS, EYES_EXCITE, EYES_HEUREUX, REST, END,
+    2, EYES_ATTENTIF, EYES_WINK, EYES_ATTENTIF, END,
+    2, EYES_NEUTRE, EYES_TRISTE, EYES_NEUTRE, END,
+    1, EYES_WIDE, EYES_SURPRIS, EYES_ATTENTIF, END,
+    1, EYES_MEFIANT, EYES_COLERE, EYES_MEFIANT, EYES_NEUTRE, END,
+    1, EYES_SURPRIS, EYES_EFFRAYE, EYES_TIMIDE, EYES_NEUTRE, END,
+    0,
+};
+
+/* Of the two resting moods, how often REST means calm. */
+#define REST_CALM 0.55f
+
+/*
+ * Looking elsewhere. A glance is a turn of the head, quick but not a snap:
+ * DART_S for the shortest, plus DART_S_PER_DEG for every degree travelled.
+ */
+#define DART_S 0.30f
+#define DART_S_PER_DEG 0.007f
+/* How long a glance lasts, shortest and longest. Short ones are the rule. */
+#define AWAY_MIN_S 0.7f
+#define AWAY_MAX_S 3.0f
+/* Chance that, from a glance, it looks at something else rather than back. */
+#define AWAY_AGAIN 0.28f
+/* Chance that a glance is at whoever is in front of it, when its mood looks away. */
+#define LOOK_AT_YOU 0.30f
+#define YOU_YAW 3.0f
+#define YOU_PITCH 4.0f
+/* The gaze never leaves the range the expressions themselves span. */
+#define LOOK_YAW_MIN -26.0f
+#define LOOK_YAW_MAX 30.0f
+#define LOOK_PITCH_MIN -16.0f
+#define LOOK_PITCH_MAX 30.0f
 
 /* ------------------------------------------------------------------ noise */
 
@@ -52,6 +166,18 @@ const int EYES_EXPR_COUNT = (int)(sizeof(EYES_EXPR) / sizeof(EYES_EXPR[0]));
  */
 static const float NOISE_PERIOD[EYES_NOISE_COUNT] = { 11.3f, 3.7f, 9.1f, 4.3f, 13.7f, 7.9f, 5.3f };
 static const float NOISE_SEED[EYES_NOISE_COUNT] = { 0.4f, 2.1f, 1.3f, 0.7f, 3.2f, 1.9f, 0.3f };
+
+/* Amplitudes. loop_noise stays within 1, so the sums are exact bounds, and the
+ * fit below relies on them. */
+#define DRIFT_YAW_A 5.5f
+#define DRIFT_YAW_B 1.6f
+#define DRIFT_PITCH_A 4.2f
+#define DRIFT_PITCH_B 1.3f
+#define DRIFT_ROLL 2.2f
+#define DRIFT_X 0.006f
+#define DRIFT_Y 0.007f
+#define BREATH_MAX 0.014f
+#define BREATH_PERIOD_S 4.4f
 
 static float loop_noise(float phase, float seed)
 {
@@ -73,6 +199,8 @@ static uint32_t rng_next(uint32_t *s)
 }
 
 static float rng_unit(uint32_t *s) { return (float)(rng_next(s) >> 8) * (1.0f / 16777216.0f); }
+
+static float rng_between(uint32_t *s, float lo, float hi) { return lo + rng_unit(s) * (hi - lo); }
 
 /* --------------------------------------------------------------- geometry */
 
@@ -147,146 +275,428 @@ void eyes_pose(const Expr *e, const EyesLife *life, float scale, float center_x,
     }
 }
 
-/* -------------------------------------------------------------- animation */
+/*
+ * A capsule is a segment thickened by r. The matrix maps the segment to
+ * another segment and the disc to an ellipse whose half extents are r times
+ * the norm of each ROW of M, so this is the exact box, not a loose bound.
+ */
+void eyes_extent(const EyeShape *s, float *ex, float *ey)
+{
+    int vertical = s->hh >= s->hw;
+    float r = vertical ? s->hw : s->hh;
+    float core = (vertical ? s->hh : s->hw) - r;
+    float sx = vertical ? s->m01 : s->m00; /* image of the core direction */
+    float sy = vertical ? s->m11 : s->m10;
+    *ex = core * f_abs(sx) + r * f_sqrt(s->m00 * s->m00 + s->m01 * s->m01);
+    *ey = core * f_abs(sy) + r * f_sqrt(s->m10 * s->m10 + s->m11 * s->m11);
+}
+
+/* -------------------------------------------------------------------- fit */
+
+/* Shift that brings [lo, hi] inside [a, b]; centred when it cannot fit. */
+static float nudge(float lo, float hi, float a, float b)
+{
+    if (hi - lo >= b - a) {
+        return 0.5f * ((a + b) - (lo + hi));
+    }
+    if (lo < a) {
+        return a - lo;
+    }
+    if (hi > b) {
+        return b - hi;
+    }
+    return 0.0f;
+}
 
 /*
- * Easing of the glide between two expressions.
+ * bloub meets the same problem on its capsule body, which has no room at the
+ * top: eyes placed on a sphere do not fit a shape that is not one. Its answer
+ * (src/bot/eyefit.ts) is the one taken here, and for its reason.
  *
- * bloub morphs with easeOutQuint, 1 - (1-k)^5: an exponential tail, which is its
- * signature, but it leaves at full speed. With expressions changing at random
- * the eyes may have half the screen to cross, and that first frame reads as a
- * jump. Multiplying the tail by (1 + 5k) cancels the initial velocity and keeps
- * the same decay: the curve starts from rest, peaks at k = 1/5 and settles
- * exactly like the original. No overshoot, same as bloub.
+ * The shift is a translation common to both eyes, so their spacing, sizes and
+ * tilts are untouched: the face is only set a little lower on a front that has
+ * no room higher up. And it is worked out ONCE per pose, on the pose the eyes
+ * are heading for, with the worst of the gaze drift already counted in; the
+ * animation then glides between two such constants like between any two
+ * numbers of an expression. Clamping the live picture frame by frame would be
+ * shorter to write and would make the eyes slide along the border like along
+ * a pane of glass, every time the drift pushed them there.
+ *
+ * bloub needs a search for this because its outlines are arbitrary. A screen
+ * is a rectangle, so the two axes separate and each is a subtraction.
  */
-static float ease(float k)
+void eyes_fit(const Expr *e, float scale, float screen_w, float screen_h, float *off_x, float *off_y)
+{
+    float lo_x = 1.0e9f, hi_x = -1.0e9f, lo_y = 1.0e9f, hi_y = -1.0e9f;
+    EyesLife life = { 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f };
+
+    /* The corners of the drift bound everything in between. */
+    for (int corner = 0; corner < 8; corner++) {
+        life.d_yaw = (corner & 1) ? DRIFT_YAW_A + DRIFT_YAW_B : -(DRIFT_YAW_A + DRIFT_YAW_B);
+        life.d_pitch = (corner & 2) ? DRIFT_PITCH_A + DRIFT_PITCH_B : -(DRIFT_PITCH_A + DRIFT_PITCH_B);
+        life.d_roll = (corner & 4) ? DRIFT_ROLL : -DRIFT_ROLL;
+        EyeShape s[2];
+        eyes_pose(e, &life, scale, 0.5f * screen_w, 0.5f * screen_h, s);
+        for (int i = 0; i < 2; i++) {
+            if (s[i].alpha <= 0.0f) {
+                continue;
+            }
+            float ex, ey;
+            eyes_extent(&s[i], &ex, &ey);
+            lo_x = f_min(lo_x, s[i].cx - ex);
+            hi_x = f_max(hi_x, s[i].cx + ex);
+            lo_y = f_min(lo_y, s[i].cy - ey);
+            hi_y = f_max(hi_y, s[i].cy + ey);
+        }
+    }
+    if (lo_x > hi_x) {
+        *off_x = *off_y = 0.0f;
+        return;
+    }
+    /* the small float of the centre, and breathing, come on top */
+    float pad_x = DRIFT_X * scale;
+    float pad_y = (DRIFT_Y + BREATH_MAX) * scale;
+    *off_x = nudge(lo_x - pad_x, hi_x + pad_x, EYES_MARGIN_PX, screen_w - EYES_MARGIN_PX);
+    *off_y = nudge(lo_y - pad_y, hi_y + pad_y, EYES_MARGIN_PX, screen_h - EYES_MARGIN_PX);
+}
+
+/* -------------------------------------------------------------- behaviour */
+
+/*
+ * The curve of a glide:  1 - (1-k)^n (1 + n k).  It leaves from rest, never
+ * overshoots, and ends on an exponential tail, which is bloub's signature
+ * (its own curve is the n = 5 tail without the factor that cancels the
+ * initial speed).
+ *
+ * n sets where the speed peaks, at k = 1/n. A change of mood takes n = 3: the
+ * face is a third of the way through its time before it moves fastest, and
+ * spends the rest settling. A glance takes n = 5, a turn of the head that is
+ * mostly over in its first third.
+ */
+static float ease(float k, int dart)
 {
     float u = 1.0f - k;
-    float u2 = u * u;
-    return 1.0f - u2 * u2 * u * (1.0f + 5.0f * k);
+    if (dart) {
+        float u2 = u * u;
+        return 1.0f - u2 * u2 * u * (1.0f + 5.0f * k);
+    }
+    return 1.0f - u * u * u * (1.0f + 3.0f * k);
 }
 
-static void bag_refill(EyesAnim *a, int avoid_first)
+/* Head for a pose, from whatever is on screen now. */
+static void glide(EyesAnim *a, const Expr *target, float seconds, int dart)
 {
-    int n = EYES_EXPR_COUNT;
-    for (int i = 0; i < n; i++) {
-        a->bag[i] = (uint8_t)i;
-    }
-    for (int i = n - 1; i > 0; i--) {
-        int j = (int)(rng_next(&a->rng) % (uint32_t)(i + 1));
-        uint8_t t = a->bag[i];
-        a->bag[i] = a->bag[j];
-        a->bag[j] = t;
-    }
-    /* never the same expression twice in a row across a refill */
-    if (n > 1 && a->bag[0] == avoid_first) {
-        int j = 1 + (int)(rng_next(&a->rng) % (uint32_t)(n - 1));
-        uint8_t t = a->bag[0];
-        a->bag[0] = a->bag[j];
-        a->bag[j] = t;
-    }
-    a->bag_pos = 0;
+    a->from = a->cur;
+    a->to.p.e = *target;
+    eyes_fit(target, a->scale, a->w, a->h, &a->to.p.off_x, &a->to.p.off_y);
+    a->glide_k = 0.0f;
+    a->glide_s = seconds;
+    a->glide_dart = dart;
 }
 
-static float hold_time(EyesAnim *a)
+static void blink_start(EyesAnim *a)
 {
-    return EYES_HOLD_MIN_S + rng_unit(&a->rng) * (EYES_HOLD_MAX_S - EYES_HOLD_MIN_S);
+    a->blink_t = 0.0f;
+    if (MOOD[a->expr_id].lids == LIDS_HEAVY) {
+        float u = rng_unit(&a->rng);
+        a->blink_close_s = 0.20f;
+        a->blink_shut_s = 0.05f + 0.75f * u * u;
+        a->blink_open_s = 0.34f;
+    } else {
+        /* measured on bloub's reference video: 0.18 s, closing a little faster */
+        a->blink_close_s = 0.081f;
+        a->blink_shut_s = 0.0f;
+        a->blink_open_s = 0.099f;
+    }
 }
 
-void eyes_init(EyesAnim *a, uint32_t seed, float scale, float center_x, float center_y)
+/* A blink that goes with something the pet does, outside the schedule. */
+static void blink_now(EyesAnim *a)
+{
+    if (MOOD[a->expr_id].lids == LIDS_STILL || a->blink_t >= 0.0f) {
+        return;
+    }
+    blink_start(a);
+    a->blink_double = 0;
+    if (a->blink_next_s < 1.2f) {
+        a->blink_next_s = 1.2f + rng_unit(&a->rng);
+    }
+}
+
+/* Time until it next looks elsewhere. */
+static float glance_wait(EyesAnim *a)
+{
+    float mean = MOOD[a->expr_id].glance_s;
+    return mean > 0.0f ? mean * rng_between(&a->rng, 0.5f, 1.5f) : 1.0e9f;
+}
+
+/* Move into a mood. `settle_s` of 0 means at the mood's own pace. */
+static void enter(EyesAnim *a, int mood, float settle_s)
+{
+    const Mood *m = &MOOD[mood];
+    if (settle_s <= 0.0f) {
+        settle_s = MOOD[a->expr_id].gesture ? MOOD[a->expr_id].settle_s : m->settle_s;
+    }
+    a->expr_id = mood;
+    a->away = 0;
+    a->stay_s = rng_between(&a->rng, m->stay_min_s, m->stay_max_s);
+    glide(a, &EYES_EXPR[mood], settle_s, 0);
+    a->hold_s = glance_wait(a);
+    /* a change of mood often starts on a blink, as a thought does */
+    if (rng_unit(&a->rng) < 0.5f) {
+        blink_now(a);
+    }
+}
+
+static int story_after(int i)
+{
+    i++;
+    while (STORY[i] != END) {
+        i++;
+    }
+    return i + 1;
+}
+
+/* Draw a story by weight. Returns the index of its first mood. */
+static int story_pick(EyesAnim *a)
+{
+    uint32_t total = 0;
+    for (int i = 0; STORY[i]; i = story_after(i)) {
+        total += STORY[i];
+    }
+    int i = 0;
+    for (int tries = 0; tries < 4; tries++) {
+        uint32_t roll = rng_next(&a->rng) % total;
+        i = 0;
+        while (roll >= STORY[i]) {
+            roll -= STORY[i];
+            i = story_after(i);
+        }
+        /* the same thing does not happen to it twice in a row; resting may */
+        if (i != a->trip_start || STORY[i + 2] == END) {
+            break;
+        }
+    }
+    a->trip_start = i;
+    return i + 1;
+}
+
+static void next_mood(EyesAnim *a)
+{
+    if (a->trip < 0 || STORY[a->trip] == END) {
+        a->trip = story_pick(a);
+        /* already where the story begins: go straight to what happens next */
+        if (STORY[a->trip] == a->expr_id && STORY[a->trip + 1] != END) {
+            a->trip++;
+        }
+    }
+    int mood = STORY[a->trip++];
+    if (mood == REST) {
+        mood = rng_unit(&a->rng) < REST_CALM ? EYES_NEUTRE : EYES_ATTENTIF;
+    }
+    if (mood == a->expr_id) {
+        /* more of the same: nothing to glide to, it only stays longer */
+        a->stay_s = rng_between(&a->rng, MOOD[mood].stay_min_s, MOOD[mood].stay_max_s);
+        return;
+    }
+    enter(a, mood, 0.0f);
+}
+
+static float gaze_distance(const Expr *a, float yaw, float pitch)
+{
+    return f_max(f_abs(a->p.yaw - yaw), f_abs(a->p.pitch - pitch));
+}
+
+/* Turn the head somewhere else, keeping the mood's eyes. */
+static void look_away(EyesAnim *a)
+{
+    Expr t = EYES_EXPR[a->expr_id];
+    const Expr *now = &a->cur.p.e;
+    float yaw, pitch;
+
+    if (rng_unit(&a->rng) < LOOK_AT_YOU && gaze_distance(now, YOU_YAW, YOU_PITCH) > 12.0f) {
+        yaw = YOU_YAW + rng_between(&a->rng, -4.0f, 4.0f);
+        pitch = YOU_PITCH + rng_between(&a->rng, -3.0f, 3.0f);
+    } else {
+        /* off to one side of where the mood looks, and a little up or down */
+        float turn = rng_between(&a->rng, 9.0f, 22.0f);
+        if (rng_next(&a->rng) & 1u) {
+            turn = -turn;
+        }
+        yaw = t.p.yaw + turn;
+        if (yaw > LOOK_YAW_MAX || yaw < LOOK_YAW_MIN) {
+            yaw = t.p.yaw - turn; /* no room on that side: the other one */
+        }
+        pitch = t.p.pitch + rng_between(&a->rng, -8.0f, 8.0f);
+        /* when it is already away, do not pick the place it is looking at */
+        if (gaze_distance(now, yaw, pitch) < 8.0f) {
+            yaw = t.p.yaw - (yaw - t.p.yaw);
+        }
+    }
+    t.p.yaw = f_clamp(yaw, LOOK_YAW_MIN, LOOK_YAW_MAX);
+    t.p.pitch = f_clamp(pitch, LOOK_PITCH_MIN, LOOK_PITCH_MAX);
+
+    float far = gaze_distance(now, t.p.yaw, t.p.pitch);
+    glide(a, &t, DART_S + DART_S_PER_DEG * far, 1);
+    a->away = 1;
+    float u = rng_unit(&a->rng);
+    a->hold_s = AWAY_MIN_S + (AWAY_MAX_S - AWAY_MIN_S) * u * u;
+    /* eyes close on the way when the head turns far */
+    if (far > 14.0f && rng_unit(&a->rng) < 0.6f) {
+        blink_now(a);
+    }
+}
+
+static void look_back(EyesAnim *a)
+{
+    const Expr *home = &EYES_EXPR[a->expr_id];
+    float far = gaze_distance(&a->cur.p.e, home->p.yaw, home->p.pitch);
+    /* a touch slower than it left: nothing is calling it back */
+    glide(a, home, (DART_S + DART_S_PER_DEG * far) * 1.25f, 1);
+    a->away = 0;
+    a->hold_s = glance_wait(a);
+    if (far > 14.0f && rng_unit(&a->rng) < 0.35f) {
+        blink_now(a);
+    }
+}
+
+void eyes_init(EyesAnim *a, uint32_t seed, float scale, float screen_w, float screen_h)
 {
     a->scale = scale;
-    a->center_x = center_x;
-    a->center_y = center_y;
+    a->w = screen_w;
+    a->h = screen_h;
     a->rng = seed ? seed : 0x5eedu;
     for (int i = 0; i < 8; i++) {
         rng_next(&a->rng);
     }
 
-    /* Wake up on the rest pose, then start wandering. */
-    a->expr_id = 0;
-    a->cur = a->from = a->to = EYES_EXPR[0];
-    a->morph_k = 1.0f;
-    a->hold_s = 2.0f + rng_unit(&a->rng) * 1.5f;
-    bag_refill(a, a->expr_id);
+    /* It wakes up calm, and stays so for a moment before anything happens. */
+    a->expr_id = EYES_NEUTRE;
+    a->cur.p.e = EYES_EXPR[EYES_NEUTRE];
+    eyes_fit(&a->cur.p.e, scale, screen_w, screen_h, &a->cur.p.off_x, &a->cur.p.off_y);
+    a->from = a->to = a->cur;
+    a->glide_k = 1.0f;
+    a->glide_s = 1.0f;
+    a->glide_dart = 0;
+    a->stay_s = rng_between(&a->rng, 8.0f, 14.0f);
+    a->hold_s = rng_between(&a->rng, 3.0f, 5.0f);
+    a->away = 0;
+    a->trip = -1; /* no story under way */
+    a->trip_start = -1;
 
-    a->blink_next_s = 1.4f;
-    a->blink_t = -1.0f;
+    /* Eyes shut on the first picture, then they open: a slow half blink. */
+    a->blink_close_s = 0.0f;
+    a->blink_shut_s = 0.25f;
+    a->blink_open_s = 0.60f;
+    a->blink_t = 0.0f;
+    a->blink_next_s = 2.6f;
     a->blink_double = 0;
 
+    a->wander = MOOD[EYES_NEUTRE].wander;
+    a->breath = 0.0f;
+    a->breath_phase = 0.0f;
     for (int i = 0; i < EYES_NOISE_COUNT; i++) {
         a->phase[i] = rng_unit(&a->rng);
     }
 }
 
-void eyes_force(EyesAnim *a, int expr_id)
+void eyes_show(EyesAnim *a, int expr_id, float settle_s)
 {
-    a->expr_id = expr_id;
-    a->cur = a->from = a->to = EYES_EXPR[expr_id];
-    a->morph_k = 1.0f;
+    if (expr_id < 0 || expr_id >= EYES_EXPR_COUNT) {
+        return;
+    }
+    a->trip = -1; /* whatever story was under way is dropped */
+    enter(a, expr_id, settle_s);
 }
 
-/* Measured on the reference video: a blink lasts 1 to 2 frames at 10 fps. */
-#define BLINK_DUR_S 0.18f
+/* How fast `wander` and `breath` follow a change of mood. */
+#define STILLNESS_S 2.0f
 
 void eyes_step(EyesAnim *a, float dt, EyeShape out[2])
 {
-    /* --- which expression ------------------------------------------------ */
-    a->hold_s -= dt;
-    if (a->hold_s <= 0.0f) {
-        if (a->bag_pos >= EYES_EXPR_COUNT) {
-            bag_refill(a, a->expr_id);
-        }
-        a->expr_id = a->bag[a->bag_pos++];
-        /* Leave from what is on screen, not from the previous target: if a
-         * change ever lands inside a glide, the eyes still do not jump. */
-        a->from = a->cur;
-        a->to = EYES_EXPR[a->expr_id];
-        a->morph_k = 0.0f;
-        a->hold_s = hold_time(a);
-    }
-
-    /* --- glide ----------------------------------------------------------- */
-    if (a->morph_k < 1.0f) {
-        a->morph_k += dt / EYES_MORPH_S;
-        if (a->morph_k >= 1.0f) {
-            a->morph_k = 1.0f;
+    /* --- glide, or decide what to do next -------------------------------- */
+    if (a->glide_k < 1.0f) {
+        a->glide_k += dt / a->glide_s;
+        if (a->glide_k >= 1.0f) {
+            a->glide_k = 1.0f;
             a->cur = a->to;
         } else {
-            float g = ease(a->morph_k);
-            for (int i = 0; i < EXPR_FLOATS; i++) {
+            float g = ease(a->glide_k, a->glide_dart);
+            for (int i = 0; i < PLACED_FLOATS; i++) {
                 a->cur.v[i] = f_lerp(a->from.v[i], a->to.v[i], g);
             }
         }
+    } else {
+        /* Only a face that has arrived decides anything: every glide starts
+         * from a pose that was declared, and ends on one. */
+        a->stay_s -= dt;
+        a->hold_s -= dt;
+        if (a->stay_s <= 0.0f) {
+            next_mood(a);
+        } else if (a->hold_s <= 0.0f) {
+            if (a->away && rng_unit(&a->rng) >= AWAY_AGAIN) {
+                look_back(a);
+            } else if (MOOD[a->expr_id].glance_s > 0.0f) {
+                look_away(a);
+            } else {
+                a->hold_s = 1.0e9f;
+            }
+        }
     }
+    const Mood *mood = &MOOD[a->expr_id];
 
     /* --- blinks ---------------------------------------------------------- */
     a->blink_next_s -= dt;
     if (a->blink_next_s <= 0.0f) {
-        a->blink_t = 0.0f;
-        if (a->blink_double) {
-            /* second beat of a double blink */
+        if (mood->lids == LIDS_STILL) {
+            a->blink_next_s = rng_between(&a->rng, 0.5f, 1.5f);
             a->blink_double = 0;
-            a->blink_next_s = 0.24f;
         } else {
-            /* 1.9 to 4.6 s between blinks, a double one now and then */
-            a->blink_next_s = 1.9f + rng_unit(&a->rng) * 2.7f;
-            a->blink_double = rng_unit(&a->rng) < 0.18f;
+            blink_start(a);
+            if (a->blink_double) {
+                /* second beat of a double blink */
+                a->blink_double = 0;
+                a->blink_next_s = 0.24f;
+            } else {
+                /* 1.9 to 4.6 s between blinks, a double one now and then */
+                float gap = rng_between(&a->rng, 1.9f, 4.6f);
+                if (mood->lids == LIDS_STARE) {
+                    gap *= 2.0f;
+                } else if (mood->lids == LIDS_HEAVY) {
+                    gap = 1.4f + 0.6f * gap;
+                }
+                a->blink_next_s = gap;
+                a->blink_double = mood->lids == LIDS_NORMAL && rng_unit(&a->rng) < 0.18f;
+            }
         }
     }
     float lid = 1.0f;
     if (a->blink_t >= 0.0f) {
-        float k = a->blink_t / BLINK_DUR_S;
-        if (k > 1.0f) {
-            a->blink_t = -1.0f;
+        float t = a->blink_t;
+        float shut_at = a->blink_close_s;
+        float open_at = shut_at + a->blink_shut_s;
+        if (t < shut_at) {
+            lid = 1.0f - t / shut_at;
+        } else if (t < open_at) {
+            lid = 0.0f;
+        } else if (t < open_at + a->blink_open_s) {
+            lid = (t - open_at) / a->blink_open_s;
         } else {
-            /* closes fast, reopens a little slower */
-            lid = k < 0.45f ? 1.0f - k / 0.45f : (k - 0.45f) / 0.55f;
+            a->blink_t = -1.0f;
+        }
+        if (a->blink_t >= 0.0f) {
             a->blink_t += dt;
         }
     }
 
     /* --- life at rest ---------------------------------------------------- */
+    float follow = f_min(dt / STILLNESS_S, 1.0f);
+    a->wander += (mood->wander - a->wander) * follow;
+    a->breath += (mood->breath - a->breath) * follow;
+    a->breath_phase += dt / BREATH_PERIOD_S;
+    if (a->breath_phase >= 1.0f) {
+        a->breath_phase -= 1.0f;
+    }
     for (int i = 0; i < EYES_NOISE_COUNT; i++) {
         float p = a->phase[i] + dt / NOISE_PERIOD[i];
         if (p >= 1.0f) {
@@ -296,13 +706,13 @@ void eyes_step(EyesAnim *a, float dt, EyeShape out[2])
     }
 #define NOISE(i) loop_noise(a->phase[i], NOISE_SEED[i])
     EyesLife life;
-    life.d_yaw = NOISE(0) * 5.5f + NOISE(1) * 1.6f;
-    life.d_pitch = NOISE(2) * 4.2f + NOISE(3) * 1.3f;
-    life.d_roll = NOISE(4) * 2.2f;
-    life.drift_x = NOISE(5) * 0.006f;
-    life.drift_y = NOISE(6) * 0.007f;
+    life.d_yaw = (NOISE(0) * DRIFT_YAW_A + NOISE(1) * DRIFT_YAW_B) * a->wander;
+    life.d_pitch = (NOISE(2) * DRIFT_PITCH_A + NOISE(3) * DRIFT_PITCH_B) * a->wander;
+    life.d_roll = NOISE(4) * DRIFT_ROLL * a->wander;
+    life.drift_x = NOISE(5) * DRIFT_X;
+    life.drift_y = NOISE(6) * DRIFT_Y + a->breath * f_sin_turns(a->breath_phase);
     life.lid = lid;
 #undef NOISE
 
-    eyes_pose(&a->cur, &life, a->scale, a->center_x, a->center_y, out);
+    eyes_pose(&a->cur.p.e, &life, a->scale, 0.5f * a->w + a->cur.p.off_x, 0.5f * a->h + a->cur.p.off_y, out);
 }

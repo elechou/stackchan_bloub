@@ -1,10 +1,14 @@
 /*
- * Anti-aliased rasteriser for the eyes, and the dirty-rectangle frame update.
+ * Anti-aliased rasteriser for the eyes, and the frame update.
  *
- * There is no framebuffer. Each frame only the rectangles that changed are
- * recomputed, a packet of pixels at a time, and streamed straight to the panel. The
- * panel keeps the rest. That is what makes 60 fps possible over SPI, and it is
- * why the "sink" is an interface: the firmware plugs the LCD in, the simulator
+ * There is no framebuffer. Each frame only what changed is recomputed, a
+ * packet of pixels at a time, and streamed straight to the panel. The panel
+ * keeps the rest. And what changes, when a white shape moves a little on a
+ * black screen, is its rim: the inside was white and still is. So the cost of
+ * a frame follows the outline of the eyes, not their area, and that is what
+ * makes 60 fps possible over SPI with eyes this large.
+ *
+ * The "sink" is an interface: the firmware plugs the LCD in, the simulator
  * plugs an in-memory image in, and both run the very same code.
  */
 #ifndef RASTER_H
@@ -22,6 +26,16 @@ typedef struct {
 
 static inline int rect_empty(const Rect *r) { return r->x0 >= r->x1 || r->y0 >= r->y1; }
 
+/*
+ * One scanline of one eye, in screen x. Outside [out_lo, out_hi] the eye draws
+ * nothing; inside [in_lo, in_hi] every pixel is fully covered. Either stretch
+ * is empty when its lo is above its hi.
+ */
+typedef struct {
+    int16_t out_lo, out_hi;
+    int16_t in_lo, in_hi;
+} RowSpan;
+
 typedef struct {
     Rect box;                 /* clipped to the screen, AA margin included */
     float cx, cy;
@@ -36,6 +50,9 @@ typedef struct {
     /* one step along x, in the capsule's own frame: u across it, v along its core */
     float su, sv, inv_su, inv_sv;
     float a, inv_a; /* su^2 + sv^2 */
+
+    /* every scanline already solved, indexed by y; or 0, to solve them as they come */
+    const RowSpan *rows;
 
     /* the scanline being drawn; x is counted as k = x - box.x0 */
     int row_y;
@@ -69,7 +86,12 @@ typedef struct {
 } PixelSink;
 
 typedef struct {
-    Rect prev[2]; /* what each eye covered on the previous frame */
+    /* Every scanline of each eye, for the picture on the panel and for the one
+     * being drawn: rows[flip] is the panel's, rows[flip ^ 1] the next. */
+    RowSpan rows[2][2][SCREEN_H];
+    int flip;
+    Rect prev[2];    /* the box each eye covered on the previous frame */
+    uint8_t fill[2]; /* and how white its inside was */
     int primed;
     /* statistics of the last frame */
     int last_rects;

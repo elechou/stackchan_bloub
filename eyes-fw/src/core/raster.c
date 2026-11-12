@@ -3,50 +3,7 @@
 
 int raster_spans_enabled = 1;
 
-/* ------------------------------------------------------------- rectangles */
-
 static int rect_area(const Rect *r) { return (r->x1 - r->x0) * (r->y1 - r->y0); }
-
-static Rect rect_union(const Rect *a, const Rect *b)
-{
-    Rect r;
-    r.x0 = a->x0 < b->x0 ? a->x0 : b->x0;
-    r.y0 = a->y0 < b->y0 ? a->y0 : b->y0;
-    r.x1 = a->x1 > b->x1 ? a->x1 : b->x1;
-    r.y1 = a->y1 > b->y1 ? a->y1 : b->y1;
-    return r;
-}
-
-/* Opening a window costs a few commands: about as long as this many pixels. */
-#define WINDOW_COST_PX 48
-
-/*
- * Merge two rectangles whenever one window over both is no dearer than two
- * windows. An eye that moved a little overlaps its old place almost entirely,
- * so those two always merge. Two eyes side by side merge only if the gap
- * between them is small; set diagonally they stay apart, because their union
- * would be mostly empty corners that still have to be sent.
- */
-static int rect_merge(Rect *list, int n)
-{
-    int changed = 1;
-    while (changed) {
-        changed = 0;
-        for (int i = 0; i < n && !changed; i++) {
-            for (int j = i + 1; j < n; j++) {
-                Rect u = rect_union(&list[i], &list[j]);
-                if (rect_area(&u) <= rect_area(&list[i]) + rect_area(&list[j]) + WINDOW_COST_PX) {
-                    list[i] = u;
-                    list[j] = list[n - 1];
-                    n--;
-                    changed = 1;
-                    break;
-                }
-            }
-        }
-    }
-    return n;
-}
 
 /* -------------------------------------------------------------- one eye */
 
@@ -67,6 +24,7 @@ void raster_prepare(const EyeShape *s, EyeRaster *e)
     e->box.x0 = e->box.x1 = e->box.y0 = e->box.y1 = 0;
     e->alpha = s->alpha;
     e->row_y = -1;
+    e->rows = 0;
     if (s->alpha <= 0.0f) {
         return;
     }
@@ -88,16 +46,10 @@ void raster_prepare(const EyeShape *s, EyeRaster *e)
     e->r = e->vertical ? s->hw : s->hh;
     e->core = (e->vertical ? s->hh : s->hw) - e->r;
 
-    /*
-     * Bounding box on screen. The matrix maps the core segment to another
-     * segment and the disc to an ellipse whose half extents are r times the
-     * norm of each ROW of M, so the box is exact, not a loose rectangle bound.
-     */
-    float sx = e->vertical ? s->m01 : s->m00; /* image of the core direction */
-    float sy = e->vertical ? s->m11 : s->m10;
-    float ex = e->core * f_abs(sx) + e->r * f_sqrt(s->m00 * s->m00 + s->m01 * s->m01);
-    float ey = e->core * f_abs(sy) + e->r * f_sqrt(s->m10 * s->m10 + s->m11 * s->m11);
-    /* one pixel of margin for the anti-aliased rim */
+    /* Bounding box on screen: exact, plus one pixel of margin for the
+     * anti-aliased rim. */
+    float ex, ey;
+    eyes_extent(s, &ex, &ey);
     int x0 = floor_i(s->cx - ex - 1.0f);
     int x1 = ceil_i(s->cx + ex + 1.0f);
     int y0 = floor_i(s->cy - ey - 1.0f);
@@ -221,6 +173,16 @@ static void row_begin(EyeRaster *e, int y)
     e->row_qy0 = e->i10 * dx + e->i11 * dy;
     e->row_y = y;
 
+    if (e->rows) {
+        /* solved already for this frame; an empty stretch stays empty when shifted */
+        const RowSpan *r = &e->rows[y];
+        e->out_lo = r->out_lo - e->box.x0;
+        e->out_hi = r->out_hi - e->box.x0;
+        e->in_lo = r->in_lo - e->box.x0;
+        e->in_hi = r->in_hi - e->box.x0;
+        return;
+    }
+
     int last = e->box.x1 - e->box.x0 - 1;
     e->out_lo = 0;
     e->out_hi = last;
@@ -326,6 +288,8 @@ static void rim(const EyeRaster *e, int k0, int k1, uint8_t *cov)
     }
 }
 
+static uint8_t fill_of(const EyeRaster *e) { return e->alpha > 0.0f ? (uint8_t)(e->alpha * 255.0f + 0.5f) : 0; }
+
 void raster_row(EyeRaster *e, int y, int xa, int xb, uint8_t *cov)
 {
     if (e->alpha <= 0.0f || y < e->box.y0 || y >= e->box.y1) {
@@ -361,7 +325,7 @@ void raster_row(EyeRaster *e, int y, int xa, int xb, uint8_t *cov)
 
     uint8_t *row = cov + e->box.x0;
     rim(e, ka, s0, row);
-    const uint8_t full_u8 = (uint8_t)(e->alpha * 255.0f + 0.5f);
+    const uint8_t full_u8 = fill_of(e);
     for (int k = s0; k < s1; k++) {
         if (row[k] < full_u8) {
             row[k] = full_u8;
@@ -370,12 +334,43 @@ void raster_row(EyeRaster *e, int y, int xa, int xb, uint8_t *cov)
     rim(e, s1, kb, row);
 }
 
+/*
+ * Solve every scanline of an eye once, into `rows`, in screen coordinates.
+ * The painter then reads them from there, and the next frame compares its own
+ * against them to find what changed.
+ */
+static void solve_rows(EyeRaster *e, RowSpan *rows)
+{
+    static const RowSpan none = { 1, 0, 1, 0 };
+    for (int y = 0; y < SCREEN_H; y++) {
+        rows[y] = none;
+    }
+    if (e->alpha > 0.0f) {
+        for (int y = e->box.y0; y < e->box.y1; y++) {
+            row_begin(e, y);
+            RowSpan *r = &rows[y];
+            if (e->out_lo <= e->out_hi) {
+                r->out_lo = (int16_t)(e->box.x0 + e->out_lo);
+                r->out_hi = (int16_t)(e->box.x0 + e->out_hi);
+            }
+            if (e->in_lo <= e->in_hi) {
+                r->in_lo = (int16_t)(e->box.x0 + e->in_lo);
+                r->in_hi = (int16_t)(e->box.x0 + e->in_hi);
+            }
+        }
+    }
+    e->rows = rows;
+    e->row_y = -1;
+}
+
 /* ------------------------------------------------------------- the frame */
 
 void renderer_init(Renderer *r)
 {
     r->prev[0].x0 = r->prev[0].x1 = r->prev[0].y0 = r->prev[0].y1 = 0;
     r->prev[1] = r->prev[0];
+    r->fill[0] = r->fill[1] = 0;
+    r->flip = 0;
     r->primed = 0;
     r->last_rects = 0;
     r->last_pixels = 0;
@@ -427,15 +422,112 @@ static void paint(const Rect *area, EyeRaster eyes[2], const PixelSink *sink)
 void renderer_full(Renderer *r, const EyeShape shapes[2], const PixelSink *sink)
 {
     EyeRaster eyes[2];
-    raster_prepare(&shapes[0], &eyes[0]);
-    raster_prepare(&shapes[1], &eyes[1]);
+    r->flip = 0;
+    for (int i = 0; i < 2; i++) {
+        raster_prepare(&shapes[i], &eyes[i]);
+        solve_rows(&eyes[i], r->rows[r->flip][i]);
+    }
     Rect all = { 0, 0, SCREEN_W, SCREEN_H };
     paint(&all, eyes, sink);
-    r->prev[0] = eyes[0].box;
-    r->prev[1] = eyes[1].box;
+    for (int i = 0; i < 2; i++) {
+        r->prev[i] = eyes[i].box;
+        r->fill[i] = fill_of(&eyes[i]);
+    }
     r->primed = 1;
     r->last_rects = 1;
     r->last_pixels = SCREEN_W * SCREEN_H;
+}
+
+/*
+ * Opening a window costs five short transfers. Measured on the robot with the
+ * console's `t`: 16.9 us, against 0.49 us for a pixel sent, so a window is
+ * worth 34 pixels repainted for nothing.
+ */
+#define WINDOW_COST_PX 34
+
+/* A solid stretch narrower than this is repainted with the rest of its row:
+ * leaving it out would split the row in two for next to nothing. */
+#define KEEP_MIN_PX 8
+
+/*
+ * Where one scanline of an eye may differ between the picture on the panel
+ * and the new one: from the leftmost pixel either of them lights to the
+ * rightmost, minus the stretch in the middle that was solid white and still
+ * is. That leaves [a0, a1) on the left and [b0, b1) on the right, or only the
+ * first when there is no such middle.
+ */
+static void row_changes(const RowSpan *was, const RowSpan *now, int same_fill, int *a0, int *a1, int *b0, int *b1)
+{
+    *a0 = *a1 = *b0 = *b1 = 0;
+    int w = was->out_lo <= was->out_hi;
+    int n = now->out_lo <= now->out_hi;
+    if (!w && !n) {
+        return;
+    }
+    int lo = !w ? now->out_lo : (!n || was->out_lo < now->out_lo) ? was->out_lo : now->out_lo;
+    int hi = !w ? now->out_hi : (!n || was->out_hi > now->out_hi) ? was->out_hi : now->out_hi;
+    /* an empty stretch is (1, 0), so an intersection with one comes out empty too */
+    int in_lo = was->in_lo > now->in_lo ? was->in_lo : now->in_lo;
+    int in_hi = was->in_hi < now->in_hi ? was->in_hi : now->in_hi;
+    *a0 = lo;
+    if (same_fill && w && n && in_hi - in_lo + 1 >= KEEP_MIN_PX) {
+        *a1 = in_lo;
+        *b0 = in_hi + 1;
+        *b1 = hi + 1;
+    } else {
+        *a1 = hi + 1;
+    }
+}
+
+/*
+ * The changed stretches of consecutive scanlines are gathered into rectangles,
+ * because the panel is written a window at a time. A band grows downwards for
+ * as long as the pixels it repaints for nothing, those inside its box but
+ * outside the stretches, cost less than opening another window would. Along a
+ * straight vertical edge that makes one tall thin window; round an end cap, a
+ * staircase of a few short ones.
+ */
+typedef struct {
+    int x0, x1, y0, rows;
+    int needed; /* pixels the stretches themselves add up to */
+} Band;
+
+static void band_flush(Renderer *r, Band *b, EyeRaster eyes[2], const PixelSink *sink)
+{
+    if (!b->rows) {
+        return;
+    }
+    Rect area = { b->x0, b->y0, b->x1, b->y0 + b->rows };
+    paint(&area, eyes, sink);
+    r->last_rects++;
+    r->last_pixels += rect_area(&area);
+    b->rows = 0;
+}
+
+static void band_row(Renderer *r, Band *b, int y, int x0, int x1, EyeRaster eyes[2], const PixelSink *sink)
+{
+    if (x0 >= x1) {
+        band_flush(r, b, eyes, sink);
+        return;
+    }
+    if (b->rows) {
+        int nx0 = x0 < b->x0 ? x0 : b->x0;
+        int nx1 = x1 > b->x1 ? x1 : b->x1;
+        int needed = b->needed + (x1 - x0);
+        if ((nx1 - nx0) * (b->rows + 1) - needed <= WINDOW_COST_PX) {
+            b->x0 = nx0;
+            b->x1 = nx1;
+            b->rows++;
+            b->needed = needed;
+            return;
+        }
+        band_flush(r, b, eyes, sink);
+    }
+    b->x0 = x0;
+    b->x1 = x1;
+    b->y0 = y;
+    b->rows = 1;
+    b->needed = x1 - x0;
 }
 
 void renderer_update(Renderer *r, const EyeShape shapes[2], const PixelSink *sink)
@@ -445,30 +537,48 @@ void renderer_update(Renderer *r, const EyeShape shapes[2], const PixelSink *sin
         return;
     }
     EyeRaster eyes[2];
-    raster_prepare(&shapes[0], &eyes[0]);
-    raster_prepare(&shapes[1], &eyes[1]);
+    int was = r->flip;
+    int now = was ^ 1;
+    for (int i = 0; i < 2; i++) {
+        raster_prepare(&shapes[i], &eyes[i]);
+        solve_rows(&eyes[i], r->rows[now][i]);
+    }
 
     /*
-     * What must be repainted: where each eye was (to erase it) and where it is
-     * now. Every rectangle is painted with the full new picture inside it, both
-     * eyes included, so the order does not matter and two rectangles that
-     * overlap simply send the shared pixels twice, with the same values.
+     * Each band is painted with the full new picture inside it, both eyes
+     * included, so the order does not matter, and where the changes of the two
+     * eyes overlap the shared pixels are simply sent twice with the same
+     * values. Nothing is missed: a pixel changes only if one eye's coverage of
+     * it does, and that eye's stretches contain it.
      */
-    Rect dirty[4];
-    int n = 0;
+    r->last_rects = 0;
+    r->last_pixels = 0;
     for (int i = 0; i < 2; i++) {
-        if (!rect_empty(&r->prev[i])) dirty[n++] = r->prev[i];
-        if (!rect_empty(&eyes[i].box)) dirty[n++] = eyes[i].box;
+        const RowSpan *p = r->rows[was][i];
+        const RowSpan *c = r->rows[now][i];
+        uint8_t fill = fill_of(&eyes[i]);
+        int same_fill = fill == r->fill[i];
+        int y0 = SCREEN_H, y1 = 0;
+        if (!rect_empty(&r->prev[i])) {
+            y0 = r->prev[i].y0;
+            y1 = r->prev[i].y1;
+        }
+        if (!rect_empty(&eyes[i].box)) {
+            if (eyes[i].box.y0 < y0) y0 = eyes[i].box.y0;
+            if (eyes[i].box.y1 > y1) y1 = eyes[i].box.y1;
+        }
+        Band left = { 0, 0, 0, 0, 0 };
+        Band right = { 0, 0, 0, 0, 0 };
+        for (int y = y0; y < y1; y++) {
+            int a0, a1, b0, b1;
+            row_changes(&p[y], &c[y], same_fill, &a0, &a1, &b0, &b1);
+            band_row(r, &left, y, a0, a1, eyes, sink);
+            band_row(r, &right, y, b0, b1, eyes, sink);
+        }
+        band_flush(r, &left, eyes, sink);
+        band_flush(r, &right, eyes, sink);
+        r->prev[i] = eyes[i].box;
+        r->fill[i] = fill;
     }
-    n = rect_merge(dirty, n);
-
-    int pixels = 0;
-    for (int i = 0; i < n; i++) {
-        paint(&dirty[i], eyes, sink);
-        pixels += rect_area(&dirty[i]);
-    }
-    r->prev[0] = eyes[0].box;
-    r->prev[1] = eyes[1].box;
-    r->last_rects = n;
-    r->last_pixels = pixels;
+    r->flip = now;
 }

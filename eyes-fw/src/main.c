@@ -92,6 +92,45 @@ static void verify(void)
     con_puts("\n");
 }
 
+/*
+ * 't' on the console: what the panel charges for opening a window, and for a
+ * pixel on the wire. The renderer weighs one against the other when it cuts a
+ * frame into windows (WINDOW_COST_PX in raster.c), so the figure is worth
+ * being able to measure. It rewrites the top scanline with what is already
+ * there, so nothing changes on the glass.
+ */
+static void timing(void)
+{
+    static uint16_t line[SCREEN_W];
+    const PixelSink *sink = lcd_sink();
+    const uint32_t per_us = hal_cpu_hz() / 1000000u;
+    enum { WINDOWS = 256, PASSES = 64 };
+
+    renderer_line(s_shapes, 0, 0, SCREEN_W, line);
+
+    uint32_t t0 = hal_ccount();
+    for (int x = 0; x < WINDOWS; x++) {
+        sink->begin(sink->ctx, x, 0, x + 1, 1);
+        sink->push(sink->ctx, &line[x], 1);
+        sink->end(sink->ctx);
+    }
+    uint32_t window_ns = (hal_ccount() - t0) / WINDOWS * 1000u / per_us;
+
+    t0 = hal_ccount();
+    for (int pass = 0; pass < PASSES; pass++) {
+        sink->begin(sink->ctx, 0, 0, SCREEN_W, 1);
+        for (int x = 0; x < SCREEN_W; x += RASTER_CHUNK) {
+            sink->push(sink->ctx, &line[x], RASTER_CHUNK);
+        }
+        sink->end(sink->ctx);
+    }
+    uint32_t pass_ns = (hal_ccount() - t0) / PASSES * 1000u / per_us;
+    uint32_t pixel_ns = pass_ns > window_ns ? (pass_ns - window_ns) / SCREEN_W : 0;
+
+    con_printf("timing: a window costs %u ns, a pixel on the wire %u ns: one window = %u pixels sent\n",
+               (unsigned)window_ns, (unsigned)pixel_ns, (unsigned)(pixel_ns ? window_ns / pixel_ns : 0));
+}
+
 static void console_poll(void)
 {
     int c = con_getc();
@@ -108,11 +147,16 @@ static void console_poll(void)
     case 'i':
         print_panel_status();
         board_print_power();
-        con_printf("expression %s, %u px repainted last frame in %d rect(s)\n", EYES_EXPR_NAME[s_anim.expr_id],
+        con_printf("mood %s for %d s more%s, %u px repainted last frame in %d window(s)\n",
+                   EYES_EXPR_NAME[s_anim.expr_id], (int)s_anim.stay_s, s_anim.away ? ", looking elsewhere" : "",
                    (unsigned)s_renderer.last_pixels, s_renderer.last_rects);
         break;
     case 'n':
-        s_anim.hold_s = 0.0f; /* next expression now */
+        /* the next expression of the table, now and briskly: to see them all, and to load the renderer */
+        eyes_show(&s_anim, (s_anim.expr_id + 1) % EYES_EXPR_COUNT, 0.7f);
+        break;
+    case 't':
+        timing();
         break;
     case '+':
     case '-':
@@ -148,7 +192,7 @@ void hal_main(void)
 
     /* First picture into the panel's memory, then light it up: no flash of garbage. */
     EyeShape *shapes = s_shapes;
-    eyes_init(&s_anim, hal_random(), EYES_SCALE_PX, SCREEN_W / 2.0f, SCREEN_H / 2.0f);
+    eyes_init(&s_anim, hal_random(), EYES_SCALE_PX, SCREEN_W, SCREEN_H);
     renderer_init(&s_renderer);
     eyes_step(&s_anim, 0.0f, shapes);
     renderer_full(&s_renderer, shapes, lcd_sink());
@@ -157,7 +201,7 @@ void hal_main(void)
 
     print_panel_status();
     board_print_power();
-    con_printf("running%s. keys: i info, b boot log, n next expression, +/- brightness, s screenshot, v verify\n",
+    con_printf("running%s. keys: i info, b boot log, n next expression, +/- brightness, s screenshot, v verify, t timing\n",
                board_ok ? "" : " (power chips did not answer!)");
 
     const uint32_t cpu_hz = hal_cpu_hz();
@@ -170,6 +214,7 @@ void hal_main(void)
     int body_done = 0;
     uint32_t stat_frames = 0, stat_late = 0;
     uint32_t work_max = 0, work_sum = 0;
+    uint32_t px_sum = 0, window_sum = 0;
     float body_timer = 0.3f, stat_timer = 0.0f;
 
     uint32_t up_s = 0, up_ticks = 0; /* time since boot, kept in integers so it never drifts */
@@ -197,6 +242,8 @@ void hal_main(void)
             work_max = work;
         }
         stat_frames++;
+        px_sum += (uint32_t)s_renderer.last_pixels;
+        window_sum += (uint32_t)s_renderer.last_rects;
 
         if (s_anim.expr_id != shown) {
             shown = s_anim.expr_id;
@@ -217,15 +264,17 @@ void hal_main(void)
         stat_timer += dt;
         if (stat_timer >= 10.0f) {
             uint32_t per_us = cpu_hz / 1000000u;
-            con_printf("stat: up %u.%03u s, %u frames in 10 s, work avg %u us, max %u us, late %u\n", (unsigned)up_s,
-                       (unsigned)(up_ticks / (cpu_hz / 1000u)), (unsigned)stat_frames,
+            con_printf("stat: up %u.%03u s, %u frames in 10 s, work avg %u us, max %u us, late %u, %u px in %u windows a frame\n",
+                       (unsigned)up_s, (unsigned)(up_ticks / (cpu_hz / 1000u)), (unsigned)stat_frames,
                        (unsigned)((work_sum / stat_frames) * 64u / per_us), (unsigned)(work_max / per_us),
-                       (unsigned)stat_late);
+                       (unsigned)stat_late, (unsigned)(px_sum / stat_frames), (unsigned)(window_sum / stat_frames));
             stat_timer = 0.0f;
             stat_frames = 0;
             stat_late = 0;
             work_sum = 0;
             work_max = 0;
+            px_sum = 0;
+            window_sum = 0;
         }
 
         console_poll();

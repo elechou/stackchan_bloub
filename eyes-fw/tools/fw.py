@@ -5,7 +5,7 @@
     python tools/fw.py flash [PORT]       write it to the robot
     python tools/fw.py monitor [PORT]     print what the firmware says
     python tools/fw.py log [SECONDS] [PORT]  reboot the robot and print its boot log
-    python tools/fw.py key KEYS [PORT]    type keys into its console (s i n + -)
+    python tools/fw.py key KEYS [PORT]    type keys into its console (i b n + - s v t)
     python tools/fw.py shot OUT.png [PORT]  read the panel's memory back as a picture
     python tools/fw.py restore [PORT]     put the factory firmware back
     python tools/fw.py sim                build the desktop simulator
