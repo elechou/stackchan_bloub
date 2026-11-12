@@ -1,0 +1,8 @@
+# Keep LF in the repo and in the working tree, regardless of core.autocrlf.
+# The toolchain, .S files and bash scripts all expect LF.
+* text=auto eol=lf
+
+*.bin binary
+*.elf binary
+*.png binary
+*.exe binary

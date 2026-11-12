@@ -1,0 +1,12 @@
+# Device dumps and vendor reference copies: local only
+/backup/
+/_ref/
+
+# Build output (reproducible from source, see eyes-fw/README.md)
+/eyes-fw/build/
+
+__pycache__/
+*.pyc
+node_modules/
+.DS_Store
+Thumbs.db
